@@ -18,3 +18,14 @@ O **CH32V003** é um microcontrolador RISC-V extremamente barato e poderoso:
 - 💲 Custo extremamente baixo  
 
 Ideal para projetos embarcados simples, controle de potência, sensores e automação.
+
+---
+
+## 🎯 Objetivo do repositório
+
+Este repositório tem como objetivo:
+
+- Demonstrar uso direto dos periféricos
+- Servir como base para novos projetos
+- Evitar HAL pesado e código desnecessário
+- Facilitar aprendizado do hardware
