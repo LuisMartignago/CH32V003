@@ -1,4 +1,4 @@
-User/main.o: ../User/main.c \
+Debug/debug.o: ../Debug/debug.c \
  c:/Users/marti/mounriver-studio-projects/ControleLedPorPWM/Debug/debug.h \
  c:/Users/marti/mounriver-studio-projects/ControleLedPorPWM/Peripheral/inc/ch32v00x.h \
  c:/Users/marti/mounriver-studio-projects/ControleLedPorPWM/Core/core_riscv.h \

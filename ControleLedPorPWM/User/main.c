@@ -1,125 +1,217 @@
-#include "ch32v00x.h"  // Biblioteca principal do CH32V003 (define registradores e perif®¶ricos)
+#include "debug.h"  // Biblioteca padr√£o (clock, delay, etc.)
 
-// ===== CONFIGURA??O DO PWM =====
-#define PWM_MIN 0        // Duty cycle m®™nimo (0%)
-#define PWM_MAX 1000     // Duty cycle m®¢ximo (~100%)
-#define PWM_PERIOD 1000  // Per®™odo do PWM (define resolu??o)
+/*
+===========================================================
+                CONTROLE PWM COM ADC + BOT√ÉO
+===========================================================
+- PC4  -> Sa√≠da PWM (TIM1_CH4)
+- PD2  -> Entrada anal√≥gica (potenci√¥metro - ADC)
+- PC0  -> Bot√£o com interrup√ß√£o (liga/desliga PWM)
 
-// ===== INICIALIZA??O DO PWM =====
+FUNCIONAMENTO:
+- O potenci√¥metro controla o duty cycle do PWM
+- O bot√£o alterna entre PWM ligado/desligado
+- Quando desligado, o MCU entra em modo sleep
+===========================================================
+*/
+
+// Vari√°vel global alterada na interrup√ß√£o
+volatile uint8_t pwm_enabled = 0;
+
+/* =========================================================
+                        PWM
+========================================================= */
 void PWM_Init(void)
 {
-    // Habilita o clock da porta D (GPIO) e do Timer 1
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD | RCC_APB2Periph_TIM1, ENABLE);
-
-    // Configura PD2 como sa®™da alternativa (PWM)
-    // Esse pino ser®¢ controlado pelo Timer (TIM1_CH1)
     GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;   // Modo fun??o alternativa push-pull
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_30MHz; // Velocidade de comuta??o
-    GPIO_Init(GPIOD, &GPIO_InitStructure);
+    TIM_TimeBaseInitTypeDef TIM_Base;
+    TIM_OCInitTypeDef TIM_OC;
 
-    // Configura??o base do Timer
-    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
-    TIM_TimeBaseStructure.TIM_Period = PWM_PERIOD - 1; // Valor m®¢ximo da contagem
-    TIM_TimeBaseStructure.TIM_Prescaler = 48 - 1;      // Divide clock de 48 MHz °˙ 1 MHz
-    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up; // Conta de 0 at®¶ o per®™odo
-    TIM_TimeBaseInit(TIM1, &TIM_TimeBaseStructure);
+    // Habilita clock GPIOC e TIM1
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC | RCC_APB2Periph_TIM1, ENABLE);
 
-    // Configura??o do canal PWM
-    TIM_OCInitTypeDef TIM_OCInitStructure;
-    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1; // Modo PWM
-    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable; // Ativa sa®™da
-    TIM_OCInitStructure.TIM_Pulse = 0; // Duty inicial (0%)
-    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High; // Ativo em n®™vel alto
+    // PC4 como sa√≠da PWM (fun√ß√£o alternativa)
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
 
-    // Aplica configura??o no canal 1 do Timer
-    TIM_OC1Init(TIM1, &TIM_OCInitStructure);
+    /*
+    CONFIGURA√á√ÉO DO TIMER:
+    Clock = 48MHz
+    Prescaler = 24 ‚Üí 2MHz
+    Per√≠odo = 100 ‚Üí 20kHz PWM
+    */
+    TIM_Base.TIM_Prescaler = 24 - 1;
+    TIM_Base.TIM_Period = 100 - 1;
+    TIM_Base.TIM_ClockDivision = 0;
+    TIM_Base.TIM_CounterMode = TIM_CounterMode_Up;
+    TIM_TimeBaseInit(TIM1, &TIM_Base);
 
-    // Liga o Timer
+    // Configura canal 4 (PC4)
+    TIM_OC.TIM_OCMode = TIM_OCMode_PWM1;
+    TIM_OC.TIM_OutputState = TIM_OutputState_Enable;
+    TIM_OC.TIM_Pulse = 0; // Duty inicial
+    TIM_OC.TIM_OCPolarity = TIM_OCPolarity_High;
+    TIM_OC4Init(TIM1, &TIM_OC);
+
+    // Preload evita glitch
+    TIM_OC4PreloadConfig(TIM1, TIM_OCPreload_Enable);
+    TIM_ARRPreloadConfig(TIM1, ENABLE);
+
+    // Liga Timer
     TIM_Cmd(TIM1, ENABLE);
 
-    // Necess®¢rio para timers avan?ados (TIM1)
+    // Necess√°rio para TIM1 (advanced timer)
     TIM_CtrlPWMOutputs(TIM1, ENABLE);
 }
 
-// ===== INICIALIZA??O DO ADC =====
-void ADC_Init_Config(void)
+// Atualiza duty cycle (0 a 999)
+void PWM_SetDuty(uint16_t duty)
 {
-    // Habilita clock da porta D e do ADC
+    if(duty > 99) duty = 99; // corrigido
+    TIM_SetCompare4(TIM1, duty);
+}
+
+/* =========================================================
+                        ADC
+========================================================= */
+void ADC_Init_Custom(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure;
+    ADC_InitTypeDef ADC_InitStructure;
+
+    // Habilita clock GPIOD e ADC1
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD | RCC_APB2Periph_ADC1, ENABLE);
 
-    // Configura PD4 como entrada anal®Ægica
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN; // Desativa digital °˙ reduz ru®™do
+    // PD2 como entrada anal√≥gica
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
     GPIO_Init(GPIOD, &GPIO_InitStructure);
 
-    // Configura??o do ADC
-    ADC_InitTypeDef ADC_InitStructure;
-    ADC_InitStructure.ADC_Mode = ADC_Mode_Independent; // ADC independente
-    ADC_InitStructure.ADC_ScanConvMode = DISABLE;      // N?o usa m®≤ltiplos canais
-    ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;// Convers?o manual
-    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None; // Sem trigger externo
-    ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right; // Resultado alinhado ®§ direita
-    ADC_InitStructure.ADC_NbrOfChannel = 1; // Apenas 1 canal
+    ADC_DeInit(ADC1);
 
+    // Configura√ß√£o b√°sica do ADC
+    ADC_InitStructure.ADC_Mode = ADC_Mode_Independent;
+    ADC_InitStructure.ADC_ScanConvMode = DISABLE;
+    ADC_InitStructure.ADC_ContinuousConvMode = ENABLE; // cont√≠nuo
+    ADC_InitStructure.ADC_ExternalTrigConv = ADC_ExternalTrigConv_None;
+    ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
+    ADC_InitStructure.ADC_NbrOfChannel = 1;
     ADC_Init(ADC1, &ADC_InitStructure);
 
-    // Seleciona canal 4 (PD4) com tempo de amostragem
-    ADC_RegularChannelConfig(ADC1, ADC_Channel_4, 1, ADC_SampleTime_9Cycles);
+    // Canal 3 = PD2
+    ADC_RegularChannelConfig(ADC1, ADC_Channel_3, 1, ADC_SampleTime_241Cycles);
 
-    // Liga o ADC
     ADC_Cmd(ADC1, ENABLE);
 
-    // ===== CALIBRA??O DO ADC =====
-    // Remove erros internos do conversor
+    // Calibra√ß√£o (obrigat√≥ria)
     ADC_ResetCalibration(ADC1);
     while(ADC_GetResetCalibrationStatus(ADC1));
 
     ADC_StartCalibration(ADC1);
     while(ADC_GetCalibrationStatus(ADC1));
+
+    // Inicia convers√£o
+    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
 }
 
-// ===== FUN??O DE LEITURA DO ADC =====
+// L√™ valor do ADC (0 a 1023)
 uint16_t ADC_Read(void)
 {
-    // Inicia convers?o
-    ADC_SoftwareStartConvCmd(ADC1, ENABLE);
-
-    // Espera at®¶ convers?o terminar
-    while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
-
-    // Retorna valor convertido (0 a 4095 °˙ 12 bits)
     return ADC_GetConversionValue(ADC1);
 }
 
-// ===== FUN??O PRINCIPAL =====
+/* =========================================================
+                        BOT√ÉO (EXTI)
+========================================================= */
+void Button_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStructure;
+    EXTI_InitTypeDef EXTI_InitStructure;
+    NVIC_InitTypeDef NVIC_InitStructure;
+
+    // Clock GPIOC + AFIO
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC | RCC_APB2Periph_AFIO, ENABLE);
+
+    // PC0 como entrada pull-up
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    // Conecta PC0 na EXTI0
+    GPIO_EXTILineConfig(GPIO_PortSourceGPIOC, GPIO_PinSource0);
+
+    // Configura interrup√ß√£o
+    EXTI_InitStructure.EXTI_Line = EXTI_Line0;
+    EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
+
+    // Dispara ao pressionar (n√≠vel vai para 0)
+    EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
+    EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+    EXTI_Init(&EXTI_InitStructure);
+
+    // NVIC (habilita interrup√ß√£o global)
+    NVIC_InitStructure.NVIC_IRQChannel = EXTI7_0_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 1;
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 1;
+    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&NVIC_InitStructure);
+}
+
+/* =========================================================
+                    INTERRUP√á√ÉO
+========================================================= */
+void EXTI7_0_IRQHandler(void) __attribute__((interrupt));
+
+void EXTI7_0_IRQHandler(void)
+{
+    if(EXTI_GetITStatus(EXTI_Line0) != RESET)
+    {
+        // Alterna estado do PWM
+        pwm_enabled = !pwm_enabled;
+
+        // Limpa flag da interrup√ß√£o
+        EXTI_ClearITPendingBit(EXTI_Line0);
+    }
+}
+
+/* =========================================================
+                        MAIN
+========================================================= */
 int main(void)
 {
-    SystemInit();        // Inicializa clock do sistema
-    PWM_Init();          // Inicializa PWM
-    ADC_Init_Config();   // Inicializa ADC
+    uint16_t adc_value;
 
-    uint16_t adc; // Valor bruto do ADC
-    uint16_t pwm; // Valor convertido para PWM
+    SystemInit();   // Inicializa clock
+    Delay_Init();   // Inicializa delay
+
+    PWM_Init();
+    ADC_Init_Custom();
+    Button_Init();
 
     while(1)
     {
-        // L®∫ valor anal®Ægico (ex: potenci?metro)
-        adc = ADC_Read();
+        if(pwm_enabled)
+        {
+            // Verifica fim da convers√£o ADC
+            if(ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC))
+            {
+                adc_value = ADC_Read();
 
-        // ===== ZONA MORTA =====
-        // Evita instabilidade perto de 0 e do m®¢ximo
-        if(adc < 100) adc = 100;
-        if(adc > 4000) adc = 4000;
+                // Ajusta PWM proporcional ao potenci√¥metro
+                PWM_SetDuty((adc_value * 100) / 1023);
+            }
+        }
+        else
+        {
+            // Desliga PWM
+            PWM_SetDuty(0);
 
-        // ===== CONVERS?O ADC °˙ PWM =====
-        // Mapeia 0®C4095 °˙ 0®C1000 (PWM)
-        pwm = PWM_MIN + ((uint32_t)adc * (PWM_MAX - PWM_MIN)) / 4095;
+            // Entra em modo baixo consumo
+            __WFI();
+        }
 
-        // Atualiza duty cycle do PWM
-        TIM_SetCompare1(TIM1, pwm);
+        Delay_Ms(10); // Estabiliza√ß√£o
     }
 }
