@@ -74,7 +74,7 @@ void Send_UID(void)
 int main(void)
 {
     SystemInit();   // Inicializa o clock do sistema
-
+    Delay_Init();   // Inicializa o delay
     UART_Config();  // Configura a UART
 
     while(1)
