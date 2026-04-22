@@ -1,6 +1,6 @@
 # ⚔️ Comparação: CH32V003 vs ATmega328P
 
-Comparação direta entre os microcontroladores **CH32V003 (RISC-V, WCH)** e **ATmega328P (AVR 8-bit)**, sem considerar placas prontas.
+Comparação direta entre os microcontroladores **CH32V003 (RISC-V, WCH)** e **ATmega328P (AVR 8-bit)** (chip do arduino uno r3), sem considerar placas prontas.
 
 ---
 
